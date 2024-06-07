@@ -1,67 +1,50 @@
-from flask import Flask, request, jsonify, send_from_directory
-from flask_sqlalchemy import SQLAlchemy
-from flask_marshmallow import Marshmallow
-import os
+import hashlib
+
+import pymongo
+from flask import Flask, jsonify, request
+from flask_pymongo import PyMongo
+
+from config import MONGO_URI
 
 app = Flask(__name__)
-basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'app.sqlite')
-app.config['UPLOAD_FOLDER'] = os.path.join(basedir, 'data')
-
-db = SQLAlchemy(app)
-ma = Marshmallow(app)
-
-# On regarde si le dossier existe
-if not os.path.exists(app.config['UPLOAD_FOLDER']):
-    os.makedirs(app.config['UPLOAD_FOLDERS'])
-
-# Classe Image (test)
-class Image(db.Model):
-    id = db.Column(db.Integer, primary_key = True)
-    filename = db.Column(db.String(100), unique=True,nullable=False)
-
-    def __init__(self, filename):
-        self.filename = filename
-
-class ImageSchema(ma.SQLAlchemyAutoSchema):
-    class Meta:
-        model = Image
-
-image_schema = ImageSchema()
-images_schema = ImageSchema(many=True)
+app.config["MONGO_URI"] = MONGO_URI
+mongo = PyMongo(app)
 
 
-@app.route('/upload', methods=['POST'])
-def upload_image():
-        if 'image' not in request.files:
-            return jsonify({"error": "No image part in the request"}), 400
-        file = request.files['image']
-        if file.filename == '':
-            return jsonify({"error": "No selected file"}), 400
-        if file:
-            filename = file.filename
-            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            new_image = Image(filename=filename)
-            db.session.add(new_image)
-            db.session.commit()
-            return image_schema.jsonify(new_image)
-    
-@app.route('/image/<int:id>', methods=['GET'])
-def get_image(id):
-    image = Image.query.get(id)
-    if not image:
-        return jsonify({"error": "Image not found"}), 404
-    return send_from_directory(app.config['UPLOAD_FOLDER'], image.filename)
+@app.route("/addPatient", methods=["POST"])
+def add_patient():
+    data = request.get_json()
 
-# Route pour obtenir toutes les images
-@app.route('/images', methods=['GET'])
-def get_images():
-    all_images = Image.query.all()
-    result = images_schema.dump(all_images)
-    return jsonify(result)
+    if not data or not all(
+        key in data
+        for key in ("nom", "prenom", "date_naissance", "genre", "groupe_sanguin")
+    ):
+        return jsonify({"error": "Données incomplètes"}), 400
 
-# Initialise the DB
-if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-        app.run(debug=True)
+    nom = data["nom"]
+    prenom = data["prenom"]
+    date_naissance = data["date_naissance"]
+    genre = data["genre"]
+    groupe_sanguin = data["groupe_sanguin"]
+
+    patient_id = hashlib.sha256(f"{nom}{prenom}".encode()).hexdigest()
+
+    patient = {
+        "_id": patient_id,
+        "nom": nom,
+        "prenom": prenom,
+        "date_naissance": date_naissance,
+        "genre": genre,
+        "groupe_sanguin": groupe_sanguin,
+    }
+
+    try:
+        mongo.db.patients.insert_one(patient)
+    except pymongo.errors.DuplicateKeyError:
+        return jsonify({"error": "Patient avec cet ID existe déjà"}), 400
+
+    return jsonify({"message": "Patient ajouté avec succès"}), 201
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
